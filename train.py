@@ -14,6 +14,19 @@ import transformer.Constants as Constants
 from transformer.Models import Transformer
 from transformer.Optim import ScheduledOptim
 from DataLoader import DataLoader
+import numpy as np
+
+def split_sentence(seq):
+    sent = []
+    met = 0
+    for idx in seq:
+        met += 1
+        if idx == Constants.EOS or met > 50:
+            break
+        elif idx != Constants.PAD:
+            sent.append(idx)
+
+    return sent
 
 def get_performance(crit, pred, gold, smoothing=False, num_class=None):
     ''' Apply label smoothing if needed '''
@@ -70,9 +83,9 @@ def train_epoch(model, training_data, crit, optimizer):
         n_total_correct += n_correct
         total_loss += loss.data[0]
 
-    return total_loss/n_total_words, n_total_correct/n_total_words
+    return total_loss/n_total_words.float(), n_total_correct.float()/n_total_words.float()
 
-def eval_epoch(model, validation_data, crit):
+def eval_epoch(model, validation_data, crit, idx2word):
     ''' Epoch operation in evaluation phase '''
 
     model.eval()
@@ -88,20 +101,28 @@ def eval_epoch(model, validation_data, crit):
         # prepare data
         src, tgt = batch
         gold = tgt[0][:, 1:]
+        n_words = gold.data.ne(Constants.PAD).sum()
 
         # forward
         pred = model(src, tgt)
         loss, n_correct = get_performance(crit, pred, gold)
 
+        pred = pred.max(1)[1]
+        gold = gold.contiguous().view(-1)
+        (gold, pred) = (split_sentence(gold.cpu().numpy()), split_sentence(pred.cpu().numpy()))
+        print('\tgold:', ' '.join([idx2word[w] for w in gold]))
+        print('\tpred:', ' '.join([idx2word[w] for w in pred]))
+        print('')
+
         # note keeping
-        n_words = gold.data.ne(Constants.PAD).sum()
         n_total_words += n_words
         n_total_correct += n_correct
         total_loss += loss.data[0]
 
-    return total_loss/n_total_words, n_total_correct/n_total_words
 
-def train(model, training_data, validation_data, crit, optimizer, opt):
+    return total_loss/n_total_words.float(), n_total_correct.float()/n_total_words.float()
+
+def train(model, training_data, validation_data, crit, optimizer, opt, idx2word):
     ''' Start training '''
 
     log_train_file = None
@@ -118,6 +139,8 @@ def train(model, training_data, validation_data, crit, optimizer, opt):
             log_tf.write('epoch,loss,ppl,accuracy\n')
             log_vf.write('epoch,loss,ppl,accuracy\n')
 
+    eval_epoch(model, validation_data, crit, idx2word)
+
     valid_accus = []
     for epoch_i in range(opt.epoch):
         print('[ Epoch', epoch_i, ']')
@@ -130,7 +153,7 @@ def train(model, training_data, validation_data, crit, optimizer, opt):
                   elapse=(time.time()-start)/60))
 
         start = time.time()
-        valid_loss, valid_accu = eval_epoch(model, validation_data, crit)
+        valid_loss, valid_accu = eval_epoch(model, validation_data, crit, idx2word)
         print('  - (Validation) ppl: {ppl: 8.5f}, accuracy: {accu:3.3f} %, '\
                 'elapse: {elapse:3.3f} min'.format(
                     ppl=math.exp(min(valid_loss, 100)), accu=100*valid_accu,
@@ -199,6 +222,7 @@ def main():
     #========= Loading Dataset =========#
     data = torch.load(opt.data)
     opt.max_token_seq_len = data['settings'].max_token_seq_len
+    idx2word = {v: k for k, v in data['dict']['tgt'].items()}
 
     #========= Preparing DataLoader =========#
     training_data = DataLoader(
@@ -238,6 +262,8 @@ def main():
         d_k=opt.d_k,
         d_v=opt.d_v,
         d_model=opt.d_model,
+        src_emb=torch.from_numpy(data['emb']['src']),
+        tgt_emb=torch.from_numpy(data['emb']['tgt']),
         d_word_vec=opt.d_word_vec,
         d_inner_hid=opt.d_inner_hid,
         n_layers=opt.n_layers,
@@ -248,7 +274,7 @@ def main():
 
     optimizer = ScheduledOptim(
         optim.Adam(
-            transformer.get_trainable_parameters(),
+            filter(lambda p: p.requires_grad, transformer.get_trainable_parameters()),
             betas=(0.9, 0.98), eps=1e-09),
         opt.d_model, opt.n_warmup_steps)
 
@@ -265,7 +291,7 @@ def main():
         transformer = transformer.cuda()
         crit = crit.cuda()
 
-    train(transformer, training_data, validation_data, crit, optimizer, opt)
+    train(transformer, training_data, validation_data, crit, optimizer, opt,  idx2word)
 
 if __name__ == '__main__':
     main()

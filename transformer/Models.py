@@ -44,7 +44,7 @@ class Encoder(nn.Module):
 
     def __init__(
             self, n_src_vocab, n_max_seq, n_layers=6, n_head=8, d_k=64, d_v=64,
-            d_word_vec=512, d_model=512, d_inner_hid=1024, dropout=0.1):
+            emb=None, d_word_vec=512, d_model=512, d_inner_hid=1024, dropout=0.1):
 
         super(Encoder, self).__init__()
 
@@ -56,6 +56,10 @@ class Encoder(nn.Module):
         self.position_enc.weight.data = position_encoding_init(n_position, d_word_vec)
 
         self.src_word_emb = nn.Embedding(n_src_vocab, d_word_vec, padding_idx=Constants.PAD)
+        if emb is not None:
+            assert emb.shape[1] == d_word_vec, 'Unmatched Encoder embeddings size'
+            self.src_word_emb.load_state_dict({'weight': emb})
+            self.src_word_emb.weight.requires_grad = False
 
         self.layer_stack = nn.ModuleList([
             EncoderLayer(d_model, d_inner_hid, n_head, d_k, d_v, dropout=dropout)
@@ -87,7 +91,7 @@ class Decoder(nn.Module):
     ''' A decoder model with self attention mechanism. '''
     def __init__(
             self, n_tgt_vocab, n_max_seq, n_layers=6, n_head=8, d_k=64, d_v=64,
-            d_word_vec=512, d_model=512, d_inner_hid=1024, dropout=0.1):
+            emb=None, d_word_vec=512, d_model=512, d_inner_hid=1024, dropout=0.1):
 
         super(Decoder, self).__init__()
         n_position = n_max_seq + 1
@@ -100,6 +104,10 @@ class Decoder(nn.Module):
 
         self.tgt_word_emb = nn.Embedding(
             n_tgt_vocab, d_word_vec, padding_idx=Constants.PAD)
+        if emb is not None:
+            assert emb.shape[1] == d_word_vec, 'Unmatched Decoder embeddings size'
+            self.tgt_word_emb.load_state_dict({'weight': emb})
+            self.tgt_word_emb.weight.requires_grad = False
         self.dropout = nn.Dropout(dropout)
 
         self.layer_stack = nn.ModuleList([
@@ -144,17 +152,18 @@ class Transformer(nn.Module):
 
     def __init__(
             self, n_src_vocab, n_tgt_vocab, n_max_seq, n_layers=6, n_head=8,
-            d_word_vec=512, d_model=512, d_inner_hid=1024, d_k=64, d_v=64,
+            src_emb=None, tgt_emb=None, d_word_vec=512, 
+            d_model=512, d_inner_hid=1024, d_k=64, d_v=64,
             dropout=0.1, proj_share_weight=True, embs_share_weight=True):
 
         super(Transformer, self).__init__()
         self.encoder = Encoder(
             n_src_vocab, n_max_seq, n_layers=n_layers, n_head=n_head,
-            d_word_vec=d_word_vec, d_model=d_model,
+            emb=src_emb, d_word_vec=d_word_vec, d_model=d_model,
             d_inner_hid=d_inner_hid, dropout=dropout)
         self.decoder = Decoder(
             n_tgt_vocab, n_max_seq, n_layers=n_layers, n_head=n_head,
-            d_word_vec=d_word_vec, d_model=d_model,
+            emb=tgt_emb, d_word_vec=d_word_vec, d_model=d_model,
             d_inner_hid=d_inner_hid, dropout=dropout)
         self.tgt_word_proj = Linear(d_model, n_tgt_vocab, bias=False)
         self.dropout = nn.Dropout(dropout)

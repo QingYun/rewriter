@@ -2,6 +2,7 @@
 import argparse
 import torch
 import transformer.Constants as Constants
+import numpy as np
 
 def read_instances_from_file(inst_file, max_sent_len, keep_case):
     ''' Convert file into word seq lists and vocab '''
@@ -65,6 +66,29 @@ def convert_instance_to_idx_seq(word_insts, word2idx):
     '''Word mapping to idx'''
     return [[word2idx[w] if w in word2idx else Constants.UNK for w in s] for s in word_insts]
 
+def load_glove(path):
+    embeddings = {}
+    with open(path, 'r') as f:
+        for l in f:
+            line = l.split()
+            word = line[0]
+            vec = line[1:]
+            embeddings[word] = np.array(vec)
+    return embeddings
+
+def build_emb(embeddings, word2idx):
+    emb_dim = embeddings['a'].shape[0]
+    emb = np.zeros((len(word2idx), emb_dim))
+    idx2word = {v: k for k, v in word2idx.items()}
+    for i in range(len(idx2word)):
+        word = idx2word[i]
+        if word in embeddings:
+            vec = embeddings[word]
+        else:
+            vec = np.random.normal(scale=0.6, size=(emb_dim, ))
+        emb[i] = vec
+    return emb
+
 def main():
     ''' Main function '''
 
@@ -74,6 +98,7 @@ def main():
     parser.add_argument('-valid_src', required=True)
     parser.add_argument('-valid_tgt', required=True)
     parser.add_argument('-save_data', required=True)
+    parser.add_argument('-glove', required=True)
     parser.add_argument('-max_len', '--max_word_seq_len', type=int, default=50)
     parser.add_argument('-min_word_count', type=int, default=5)
     parser.add_argument('-keep_case', action='store_true')
@@ -135,6 +160,14 @@ def main():
             print('[Info] Build vocabulary for target.')
             tgt_word2idx = build_vocab_idx(train_tgt_word_insts, opt.min_word_count)
 
+    # index to embedding
+    print('[Info] Link embedding')
+    embeddings = load_glove(opt.glove)
+    src_emb = build_emb(embeddings, src_word2idx)
+    tgt_emb = build_emb(embeddings, tgt_word2idx)
+    print(embeddings['the'])
+    print(src_emb[src_word2idx['the']])
+
     # word to index
     print('[Info] Convert source word instances into sequences of word index.')
     train_src_insts = convert_instance_to_idx_seq(train_src_word_insts, src_word2idx)
@@ -149,6 +182,9 @@ def main():
         'dict': {
             'src': src_word2idx,
             'tgt': tgt_word2idx},
+        'emb': {
+            'src': src_emb,
+            'tgt': tgt_emb},
         'train': {
             'src': train_src_insts,
             'tgt': train_tgt_insts},
