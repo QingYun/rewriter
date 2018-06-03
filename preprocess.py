@@ -3,6 +3,7 @@ import argparse
 import torch
 import transformer.Constants as Constants
 import numpy as np
+from nltk.tokenize import word_tokenize
 
 def read_instances_from_file(inst_file, max_sent_len, keep_case):
     ''' Convert file into word seq lists and vocab '''
@@ -13,9 +14,12 @@ def read_instances_from_file(inst_file, max_sent_len, keep_case):
         for sent in f:
             if not keep_case:
                 sent = sent.lower()
-            words = sent.split()
+            words = word_tokenize(sent)
             if len(words) > max_sent_len:
                 trimmed_sent_count += 1
+                word_insts += [None]
+                continue
+
             word_inst = words[:max_sent_len]
 
             if word_inst:
@@ -76,16 +80,41 @@ def load_glove(path):
             embeddings[word] = np.array(vec)
     return embeddings
 
-def build_emb(embeddings, word2idx):
+def load_structural_embeddings(path):
+    return np.load(open(path, 'rb'))
+
+def build_emb(embeddings, word2idx, semb):
     emb_dim = embeddings['a'].shape[0]
-    emb = np.zeros((len(word2idx), emb_dim))
+    semb_dim = semb.shape[1]
+    emb = np.zeros((len(word2idx), emb_dim + semb_dim))
+    empty_semb = np.zeros((semb_dim))
     idx2word = {v: k for k, v in word2idx.items()}
     for i in range(len(idx2word)):
-        word = idx2word[i]
+        parts = idx2word[i].split('__')
+        if len(parts) == 1:
+            word = parts[0]
+            sidx = None
+        elif len(parts) == 2:
+            word, sidx = parts
+            try:
+                sidx = int(sidx)
+            except:
+                sidx = None
+        else:
+            print('Error parts length:', idx2word[i])
+            word = Constants.UNK_WORD
+            sidx = None
+
         if word in embeddings:
             vec = embeddings[word]
         else:
             vec = np.random.normal(scale=0.6, size=(emb_dim, ))
+
+        if sidx is not None:
+            vec = np.append(vec, semb[sidx, :])
+        else:
+            vec = np.append(vec, empty_semb)
+
         emb[i] = vec
     return emb
 
@@ -95,10 +124,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-train_src', required=True)
     parser.add_argument('-train_tgt', required=True)
-    parser.add_argument('-valid_src', required=True)
-    parser.add_argument('-valid_tgt', required=True)
     parser.add_argument('-save_data', required=True)
     parser.add_argument('-glove', required=True)
+    parser.add_argument('-semb', required=True)
     parser.add_argument('-max_len', '--max_word_seq_len', type=int, default=50)
     parser.add_argument('-min_word_count', type=int, default=5)
     parser.add_argument('-keep_case', action='store_true')
@@ -124,22 +152,6 @@ def main():
     train_src_word_insts, train_tgt_word_insts = list(zip(*[
         (s, t) for s, t in zip(train_src_word_insts, train_tgt_word_insts) if s and t]))
 
-    # Validation set
-    valid_src_word_insts = read_instances_from_file(
-        opt.valid_src, opt.max_word_seq_len, opt.keep_case)
-    valid_tgt_word_insts = read_instances_from_file(
-        opt.valid_tgt, opt.max_word_seq_len, opt.keep_case)
-
-    if len(valid_src_word_insts) != len(valid_tgt_word_insts):
-        print('[Warning] The validation instance count is not equal.')
-        min_inst_count = min(len(valid_src_word_insts), len(valid_tgt_word_insts))
-        valid_src_word_insts = valid_src_word_insts[:min_inst_count]
-        valid_tgt_word_insts = valid_tgt_word_insts[:min_inst_count]
-
-    #- Remove empty instances
-    valid_src_word_insts, valid_tgt_word_insts = list(zip(*[
-        (s, t) for s, t in zip(valid_src_word_insts, valid_tgt_word_insts) if s and t]))
-
     # Build vocabulary
     if opt.vocab:
         predefined_data = torch.load(opt.vocab)
@@ -163,19 +175,42 @@ def main():
     # index to embedding
     print('[Info] Link embedding')
     embeddings = load_glove(opt.glove)
-    src_emb = build_emb(embeddings, src_word2idx)
-    tgt_emb = build_emb(embeddings, tgt_word2idx)
+    semb = load_structural_embeddings(opt.semb)
+    src_emb = build_emb(embeddings, src_word2idx, semb)
+    tgt_emb = build_emb(embeddings, tgt_word2idx, semb)
+
     print(embeddings['the'])
-    print(src_emb[src_word2idx['the']])
+    print(tgt_emb[tgt_word2idx['the']])
 
     # word to index
     print('[Info] Convert source word instances into sequences of word index.')
     train_src_insts = convert_instance_to_idx_seq(train_src_word_insts, src_word2idx)
-    valid_src_insts = convert_instance_to_idx_seq(valid_src_word_insts, src_word2idx)
 
     print('[Info] Convert target word instances into sequences of word index.')
     train_tgt_insts = convert_instance_to_idx_seq(train_tgt_word_insts, tgt_word2idx)
-    valid_tgt_insts = convert_instance_to_idx_seq(valid_tgt_word_insts, tgt_word2idx)
+
+    assert len(train_src_insts) == len(train_tgt_insts)
+    total_sent = len(train_src_insts)
+    valid_sent_idx = np.random.choice(total_sent, int(total_sent / 50))
+    valid_src_insts = []
+    valid_tgt_insts = []
+    for idx in valid_sent_idx:
+        valid_src_insts.append(train_src_insts[idx])
+        valid_tgt_insts.append(train_tgt_insts[idx])
+    for idx in sorted(valid_sent_idx, reverse=True):
+        del train_src_insts[idx]
+        del train_tgt_insts[idx]
+
+    assert (len(train_src_insts) + len(valid_src_insts)) == total_sent
+
+    print('src_word2idx', len(src_word2idx))
+    print('tgt_word2idx', len(tgt_word2idx))
+    print('src_emb', src_emb.shape)
+    print('tgt_emb', tgt_emb.shape)
+    print('train_src_insts', len(train_src_insts))
+    print('train_tgt_insts', len(train_tgt_insts))
+    print('valid_src_insts', len(valid_src_insts))
+    print('valid_tgt_insts', len(valid_tgt_insts))
 
     data = {
         'settings': opt,
